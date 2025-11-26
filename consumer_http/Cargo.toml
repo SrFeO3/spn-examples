@@ -1,0 +1,15 @@
+[package]
+name = "consumer_h1"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+spnagent = { git = "https://github.com/SrFeO3/spnagent" }
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+quinn = "0.11.8"
+
+hyper = { version = "1.7", features = ["full"] }
+http-body-util = "0.1"
+hyper-util = { version = "0.1", features = ["full"] }
