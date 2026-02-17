@@ -1,2 +1,4 @@
 /consumer_db/target/
 /consumer_http/target/
+/provider_http/target/
+/old/
