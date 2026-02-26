@@ -5,20 +5,7 @@
 
 use tracing::{error, info};
 
-use quinn::RecvStream;
-use quinn::SendStream;
-
-use ep_lib::client_core::create_spn_endpoint;
-
-use tokio::io::AsyncRead;
-use tokio::io::AsyncWrite;
-
-use std::pin::Pin;
-use std::task::Context;
-use std::task::Poll;
-use tokio::io::ReadBuf;
-
-use tokio::io;
+use ep_lib::core::create_spn_consumer_endpoint;
 
 use tokio_postgres::{Config, NoTls};
 
@@ -35,25 +22,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 1. Call the library's main function to get the Consumer object.
     //    This establishes and maintains the QUIC connection in the background.
-    let consumer = create_spn_endpoint(
-        &"chipin://spnhub.wgd.example.com:4433",
-        &"../cert_client/client4.pem",
-        &"../cert_client/client4-key.pem",
-        &"../cert_server/ca.pem",
-        &[b"sc01-consumer"], // for development
-    )
-    .await?;
+    let consumer = create_spn_consumer_endpoint(
+        "https://spn-hub.example.com:4433",
+        "/path/to/cert.pem",
+        "/path/to/key.pem",
+        "/path/to/ca.pem",
+    ).await?;
     info!("SpnConsumer created. Background connection maintenance is running.");
 
     info!("Postgres Client over QUIC");
     match consumer.open_stream().await {
-        Ok((send_stream, recv_stream)) => {
+        Ok(stream) => {
             info!("Successfully opened a QUIC stream.");
 
-            // 2. Combine the send and receive streams into a single bidirectional stream.
-            let adapted_stream = TokioStreamAdapter::new(send_stream, recv_stream);
-
-            // 3. Connect to PostgreSQL using the `connect_raw` method.
+            // 2. Connect to PostgreSQL using the `connect_raw` method.
             // https://docs.rs/tokio-postgres/latest/tokio_postgres/config/struct.Config.html#method.connect_raw
             let mut config = Config::new();
             config.user("postgres");
@@ -61,7 +43,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             config.dbname("postgres");
 
             info!("Attempting to connect to Postgres with a 10-second timeout...");
-            let connect_future = config.connect_raw(adapted_stream, NoTls);
+            let connect_future = config.connect_raw(stream, NoTls);
             let (client, connection) = match tokio::time::timeout(
                 std::time::Duration::from_secs(10),
                 connect_future,
@@ -81,7 +63,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             });
 
-            // 4. Execute a query and retrieve the results.
+            // 3. Execute a query and retrieve the results.
             info!("Executing query...");
             let rows = client
                 .query("SELECT id, name, origin, price FROM fruit", &[])
@@ -107,51 +89,4 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("Application shutting down. The Consumer will be dropped, stopping background tasks.");
     Ok(())
-}
-
-pub struct TokioStreamAdapter {
-    send: SendStream,
-    recv: RecvStream,
-}
-
-impl TokioStreamAdapter {
-    pub fn new(send: SendStream, recv: RecvStream) -> Self {
-        Self { send, recv }
-    }
-}
-
-impl AsyncRead for TokioStreamAdapter {
-    fn poll_read(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &mut ReadBuf<'_>,
-    ) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.get_mut().recv)
-            .poll_read(cx, buf)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
-    }
-}
-
-impl AsyncWrite for TokioStreamAdapter {
-    fn poll_write(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &[u8],
-    ) -> Poll<io::Result<usize>> {
-        Pin::new(&mut self.get_mut().send)
-            .poll_write(cx, buf)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
-    }
-
-    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.get_mut().send)
-            .poll_flush(cx)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
-    }
-
-    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.get_mut().send)
-            .poll_shutdown(cx)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
-    }
 }

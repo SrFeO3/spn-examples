@@ -2,7 +2,8 @@
 //
 // This is a simple HTTP/1.0 server provided over SPN.
 
-use ep_lib::client_core::create_spn_endpoint;
+use ep_lib::core::create_spn_provider_endpoint;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tracing::{error, info};
 
 #[tokio::main]
@@ -15,14 +16,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("My new application started!");
 
-    let provider = create_spn_endpoint(
-        &"chipin://testing123.wgd.example.com:4433",
-        &"../certc2/client1.pem",
-        &"../certc2/client1-key.pem",
-        &"../certs2/ca.pem",
-        &[b"sc01-provider"], // for development
-    )
-    .await?;
+    let provider = create_spn_provider_endpoint(
+        "https://spn-hub.example.com:4433",
+        "/path/to/cert.pem",
+        "/path/to/key.pem",
+        "/path/to/ca.pem",
+    ).await?;
     info!("SpnProvider created. Background connection maintenance is running.");
 
     info!("Simple HTTP 1.0 Server");
@@ -38,32 +37,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Accept a new stream.
             result = provider.accept_stream() => {
                 match result {
-                    Ok((mut send_stream, mut recv_stream)) => {
+                    Ok(mut stream) => {
                         info!("New stream accepted! Spawning a handler task.");
                         // Spawn a new task to process this stream asynchronously.
                         tokio::spawn(async move {
                             // Wait for and read the request from the client.
                             let mut request_buffer = vec![0; 4096];
-                            if let Err(e) = recv_stream.read(&mut request_buffer).await {
+                            if let Err(e) = stream.read(&mut request_buffer).await {
                                 error!("Failed to read from stream: {}", e);
                                 return;
                             }
                             info!("Received request, sending response...");
 
                             // Prepare a simple HTTP/1.0 response.
-                            let body = "<html><body><h1>Hello, World!</h1></body></html>";
+                            let body = "<html><body><h1>Hello from SPN!</h1></body></html>";
                             let response = format!(
                                 "HTTP/1.0 200 OK\r\nContent-Length: {}\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n{}",
                                 body.len(),
                                 body
                             );
 
-                            // Send the response and close the stream.
-                            if let Err(e) = send_stream.write_all(response.as_bytes()).await {
+                            // Send the response and gracefully close the write-side of the stream.
+                            if let Err(e) = stream.write_all(response.as_bytes()).await {
                                 error!("Failed to send response: {}", e);
-                            // `and_then` cannot be used because the error types are different. Call `finish()` separately.
-                            } else if let Err(e) = send_stream.finish() {
-                                error!("Failed to finish stream: {}", e);
+                            } else if let Err(e) = stream.shutdown().await {
+                                error!("Failed to shutdown stream: {}", e);
                             } else {
                                 info!("Response sent and stream finished.");
                             }

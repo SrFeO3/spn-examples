@@ -2,24 +2,10 @@
 //
 // This is a simple HTTP/1.1 client that connects over SPN
 // using Hyper.
-//
 
 use tracing::{error, info};
 
-use quinn::RecvStream;
-use quinn::SendStream;
-
-use ep_lib::client_core::create_spn_endpoint;
-
-use tokio::io::AsyncRead;
-use tokio::io::AsyncWrite;
-
-use std::pin::Pin;
-use std::task::Context;
-use std::task::Poll;
-use tokio::io::ReadBuf;
-
-use tokio::io;
+use ep_lib::core::create_spn_consumer_endpoint;
 
 use http_body_util::{BodyExt, Empty};
 use hyper::body::Bytes;
@@ -39,26 +25,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 1. Call the library's main function to get the Consumer object.
     //    This establishes and maintains the QUIC connection in the background.
-    let consumer = create_spn_endpoint(
-        &"chipin://spnhub.wgd.example.com:4433",
-        &"../cert_client/client2.pem",
-        &"../cert_client/client2-key.pem",
-        &"../cert_server/ca.pem",
-        &[b"sc01-consumer"], // for development
-    )
-    .await?;
+    let consumer = create_spn_consumer_endpoint(
+        "https://spn-hub.example.com:4433",
+        "/path/to/cert.pem",
+        "/path/to/key.pem",
+        "/path/to/ca.pem",
+    ).await?;
     info!("SpnConsumer created. Background connection maintenance is running.");
 
     info!("H1 Client over QUIC");
     match consumer.open_stream().await {
-        Ok((send_stream, recv_stream)) => {
+        Ok(stream) => {
             info!("Successfully opened a QUIC stream.");
 
-            // 2. Combine the send and receive streams into a single bidirectional stream.
-            let adapted_stream = TokioStreamAdapter::new(send_stream, recv_stream);
-
-            // 3. Wrap the stream in TokioIo to make it compatible with Hyper.
-            let io = TokioIo::new(adapted_stream);
+            // 2. Wrap the stream in TokioIo to make it compatible with Hyper.
+            let io = TokioIo::new(stream);
 
             let (mut sender, connection) = hyper::client::conn::http1::handshake(io).await?;
 
@@ -94,51 +75,4 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("Application shutting down. The Consumer will be dropped, stopping background tasks.");
     Ok(())
-}
-
-pub struct TokioStreamAdapter {
-    send: SendStream,
-    recv: RecvStream,
-}
-
-impl TokioStreamAdapter {
-    pub fn new(send: SendStream, recv: RecvStream) -> Self {
-        Self { send, recv }
-    }
-}
-
-impl AsyncRead for TokioStreamAdapter {
-    fn poll_read(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &mut ReadBuf<'_>,
-    ) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.get_mut().recv)
-            .poll_read(cx, buf)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
-    }
-}
-
-impl AsyncWrite for TokioStreamAdapter {
-    fn poll_write(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &[u8],
-    ) -> Poll<io::Result<usize>> {
-        Pin::new(&mut self.get_mut().send)
-            .poll_write(cx, buf)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
-    }
-
-    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.get_mut().send)
-            .poll_flush(cx)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
-    }
-
-    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.get_mut().send)
-            .poll_shutdown(cx)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
-    }
 }
